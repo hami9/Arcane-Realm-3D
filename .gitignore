@@ -16,6 +16,8 @@ cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
+CMakeUserPresets.json
+compile_commands.json
 
 # IDE & Editor folders
 .vscode/
@@ -33,6 +35,6 @@ Desktop.ini
 *.a
 *.lib
 *.dll
-!raylib-6.0_win64_mingw-w64/lib/libraylib.a
-!raylib-6.0_win64_mingw-w64/lib/libraylibdll.a
-!raylib-6.0_win64_mingw-w64/lib/raylib.dll
+!third_party/raylib-6.0_win64_mingw-w64/lib/libraylib.a
+!third_party/raylib-6.0_win64_mingw-w64/lib/libraylibdll.a
+!third_party/raylib-6.0_win64_mingw-w64/lib/raylib.dll
