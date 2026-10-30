@@ -1,4 +1,5 @@
 #include "gameplay/Gameplay.h"
+#include "gameplay/EnemySystem.h"
 #include "persistence/SaveSystem.h"
 #include "raymath.h"
 
@@ -48,8 +49,9 @@ void AddDamageText(Vector3 pos, int damage, Color color, bool crit) {
     G.damageTexts.push_back(dt);
 }
 
-void TriggerExplosion(Vector3 pos, float radius, float damage, Color coreColor) {
-    PlaySound(G.sndExplosion);
+void TriggerExplosion(Vector3 pos, float radius, float damage, Color coreColor, bool shatterFrozen) {
+    if (radius <= 0.0f || damage <= 0.0f) return;
+    if (IsAudioDeviceReady()) PlaySound(G.sndExplosion);
     if (G.settings.screenShake) G.screenShake = 0.45f;
 
     for (int i = 0; i < 50; i++) {
@@ -66,15 +68,23 @@ void TriggerExplosion(Vector3 pos, float radius, float damage, Color coreColor) 
     }
 
     for (auto& e : G.enemies) {
-        if (!e.active) continue;
+        if (!e.active || e.hp <= 0.0f) continue;
         float dist = Vector3Distance(pos, e.pos);
         if (dist <= radius) {
             float falloff = 1.0f - (dist / radius) * 0.5f;
-            float dmg = damage * falloff;
+            const bool shattered = shatterFrozen && e.frozenTimer > 0.0f && e.type != ENEMY_FROST_WRAITH;
+            float dmg = damage * falloff * (shattered ? 1.5f : 1.0f);
+            if (shattered) {
+                e.frozenTimer = 0.0f;
+                for (int i = 0; i < 8; ++i) {
+                    const float angle = static_cast<float>(i) / 8.0f * 2.0f * PI;
+                    AddParticle(e.pos, {cosf(angle) * 5.0f, 2.0f, sinf(angle) * 5.0f}, SKYBLUE, 0.3f, 0.5f);
+                }
+            }
             e.hp -= dmg;
             e.hurtTimer = 0.2f;
             G.hitmarkerTimer = 0.15f;
-            AddDamageText(Vector3Add(e.pos, {0, 1.8f, 0}), (int)dmg, ORANGE, (dmg > 50));
+            AddDamageText(Vector3Add(e.pos, {0, 1.8f, 0}), (int)dmg, shattered ? SKYBLUE : ORANGE, shattered || dmg > 50);
 
             Vector3 push = Vector3Normalize(Vector3Subtract(e.pos, pos));
             e.pos = Vector3Add(e.pos, Vector3Scale(push, 2.8f * falloff));
@@ -86,9 +96,9 @@ void TriggerExplosion(Vector3 pos, float radius, float damage, Color coreColor) 
 // Spells
 // -----------------------------------------------------------------------------
 void CastFireball(Vector3 from, Vector3 dir) {
-    if (G.playerMana < 12.0f) return;
+    if (G.cdFireball > 0.0f || G.playerMana < 12.0f) return;
     G.playerMana -= 12.0f;
-    PlaySound(G.sndFireball);
+    if (IsAudioDeviceReady()) PlaySound(G.sndFireball);
     G.cdFireball = 0.28f;
 
     int count = G.perkFireMultishot;
@@ -118,9 +128,9 @@ void CastFireball(Vector3 from, Vector3 dir) {
 }
 
 void CastFrostNova() {
-    if (G.playerMana < 30.0f) return;
+    if (G.cdFrost > 0.0f || G.playerMana < 30.0f) return;
     G.playerMana -= 30.0f;
-    PlaySound(G.sndFrost);
+    if (IsAudioDeviceReady()) PlaySound(G.sndFrost);
     G.cdFrost = 5.0f;
 
     FrostNova fn;
@@ -128,7 +138,7 @@ void CastFrostNova() {
     fn.radius = 1.0f;
     fn.maxRadius = 14.5f;
     fn.speed = 22.0f;
-    fn.damage = 35.0f;
+    fn.damage = GetFrostDamage();
     fn.duration = 3.5f + G.perkFrostDuration;
     fn.active = true;
     G.frostNovas.push_back(fn);
@@ -141,17 +151,57 @@ void CastFrostNova() {
     }
 }
 
+void UpdateFrostNovas(float dt) {
+    for (auto& nova : G.frostNovas) {
+        if (!nova.active) continue;
+        const float previousRadius = nova.radius;
+        nova.radius = std::min(nova.maxRadius, nova.radius + nova.speed * dt);
+
+        for (std::size_t index = 0; index < G.enemies.size(); ++index) {
+            auto& enemy = G.enemies[index];
+            if (!enemy.active || enemy.hp <= 0.0f) continue;
+            if (std::find(nova.hitEnemyIndices.begin(), nova.hitEnemyIndices.end(), index) != nova.hitEnemyIndices.end()) continue;
+            const float distance = Vector3Distance(nova.center, enemy.pos);
+            // Sweep the moving ring so a long frame cannot skip a target.
+            if (distance < previousRadius - 1.8f || distance > nova.radius + 1.8f) continue;
+            nova.hitEnemyIndices.push_back(index);
+
+            const float damage = nova.damage * (enemy.type == ENEMY_FROST_WRAITH ? 0.4f : 1.0f);
+            enemy.hp -= damage;
+            if (enemy.type != ENEMY_FROST_WRAITH) {
+                enemy.frozenTimer = std::max(enemy.frozenTimer, nova.duration);
+                if (enemy.attackWindup > 0.0f) {
+                    enemy.attackWindup = 0.0f;
+                    enemy.attackCooldown = 1.0f;
+                }
+            }
+            enemy.hurtTimer = 0.2f;
+            G.hitmarkerTimer = 0.15f;
+            AddDamageText(Vector3Add(enemy.pos, {0, 1.8f, 0}), static_cast<int>(damage), SKYBLUE);
+            for (int i = 0; i < 14; i++) {
+                Vector3 velocity = {
+                    (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 4.0f,
+                    1.0f + static_cast<float>(rand()) / RAND_MAX * 4.0f,
+                    (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 4.0f
+                };
+                AddParticle(enemy.pos, velocity, WHITE, 0.3f, 0.5f);
+            }
+        }
+        if (nova.radius >= nova.maxRadius) nova.active = false;
+    }
+}
+
 void CastThunderstrike() {
-    if (G.playerMana < 40.0f) return;
+    if (G.cdThunder > 0.0f || G.playerMana < 40.0f) return;
     G.playerMana -= 40.0f;
-    PlaySound(G.sndThunder);
+    if (IsAudioDeviceReady()) PlaySound(G.sndThunder);
     G.cdThunder = 6.5f;
     if (G.settings.screenShake) G.screenShake = 0.6f;
 
     Enemy* target = nullptr;
     float closestDist = 999.0f;
     for (auto& e : G.enemies) {
-        if (!e.active) continue;
+        if (!e.active || e.hp <= 0.0f) continue;
         float d = Vector3Distance(G.playerPos, e.pos);
         if (d < closestDist && d < 35.0f) {
             closestDist = d;
@@ -181,7 +231,7 @@ void CastThunderstrike() {
             Enemy* nextTarget = nullptr;
             float bestDist = 17.0f;
             for (auto& candidate : G.enemies) {
-                if (!candidate.active) continue;
+                if (!candidate.active || candidate.hp <= 0.0f) continue;
                 if (std::find(chained.begin(), chained.end(), &candidate) != chained.end()) continue;
                 float d = Vector3Distance(lastPos, candidate.pos);
                 if (d < bestDist) {
@@ -205,11 +255,19 @@ void CastThunderstrike() {
     }
 }
 
+float GetBlinkCooldown() {
+    return std::max(1.2f, 2.8f / std::max(1.0f, G.perkSpeedMult));
+}
+
+float GetFrostDamage() {
+    // The existing saved duration bonus also identifies the number of frost ranks.
+    return 35.0f * (1.0f + 0.3f * std::max(0.0f, G.perkFrostDuration / 2.0f));
+}
+
 void CastBlink() {
-    if (G.playerMana < 18.0f) return;
-    G.playerMana -= 18.0f;
-    PlaySound(G.sndBlink);
-    G.cdBlink = 2.8f;
+    if (G.cdBlink > 0.0f) return;
+    if (IsAudioDeviceReady()) PlaySound(G.sndBlink);
+    G.cdBlink = GetBlinkCooldown();
     G.invulnerableTimer = 0.45f;
 
     for (int i = 0; i < 28; i++) {
@@ -250,24 +308,32 @@ void CastBlink() {
 // -----------------------------------------------------------------------------
 void InitPerks() {
     G.availablePerks = {
-        { "Arcane Triad", "TRIPLE FIREBALL", "Fires 3 fireballs at once", "with wide area blast damage.", 1 },
-        { "Supernova Blast", "EXPLOSIVE FORCE", "Increases blast radius +50%", "and strengthens knockback.", 2 },
+        { "Arcane Triad", "MULTISHOT", "+2 fireballs per cast", "Stacks up to 7 fireballs.", 1 },
+        { "Supernova Blast", "EXPLOSIVE FORCE", "+60% base blast radius", "Covers a wider impact area.", 2 },
         { "Absolute Zero", "PERMAFROST", "+2s freeze ring duration", "and boosts ice damage +30%.", 3 },
-        { "Chain Shock", "CHAIN LIGHTNING", "Lightning arcs across 4", "additional nearby enemies.", 4 },
+        { "Chain Shock", "CHAIN LIGHTNING", "+3 additional chain targets", "Arcs between nearby enemies.", 4 },
         { "Fleetfoot Sorcerer", "ETHEREAL STRIDE", "+30% movement speed bonus", "and lower dash cooldown.", 5 },
-        { "Mana Wellspring", "INFINITE FOUNT", "2x faster mana recharge", "and grants +40 max mana.", 6 }
+        { "Mana Wellspring", "INFINITE FOUNT", "+100% base mana recharge", "+40 current and max mana.", 6 }
     };
 }
 
 void TriggerLevelUp() {
-    PlaySound(G.sndLevelUp);
+    // One choice belongs to one level. Excess XP waits until that choice resolves.
+    if (G.state == STATE_PERK_SELECT || G.playerNextXp <= 0 || G.playerXp < G.playerNextXp) return;
+
+    std::vector<Perk> pool;
+    for (const auto& perk : G.availablePerks) {
+        if (perk.id != 1 || G.perkFireMultishot < 7) pool.push_back(perk);
+    }
+    if (pool.empty()) return;
+
+    if (IsAudioDeviceReady()) PlaySound(G.sndLevelUp);
     G.playerLevel++;
     G.playerXp -= G.playerNextXp;
-    G.playerNextXp = (int)(G.playerNextXp * 1.5f);
+    G.playerNextXp = static_cast<int>(G.playerNextXp * 1.5f);
     G.playerHp = G.playerMaxHp;
     G.playerMana = G.playerMaxMana;
 
-    std::vector<Perk> pool = G.availablePerks;
     G.currentPerkChoices.clear();
     for (int i = 0; i < 3 && !pool.empty(); i++) {
         int idx = rand() % pool.size();
@@ -275,20 +341,33 @@ void TriggerLevelUp() {
         pool.erase(pool.begin() + idx);
     }
     G.state = STATE_PERK_SELECT;
-    EnableCursor();
+    if (IsWindowReady()) EnableCursor();
 }
 
 void ApplyPerk(int perkId) {
-    if (perkId == 1) G.perkFireMultishot = 3;
+    if (G.state != STATE_PERK_SELECT) return;
+    const auto offered = std::find_if(G.currentPerkChoices.begin(), G.currentPerkChoices.end(),
+        [perkId](const Perk& perk) { return perk.id == perkId; });
+    if (offered == G.currentPerkChoices.end()) return;
+
+    if (perkId == 1) G.perkFireMultishot = std::min(7, G.perkFireMultishot + 2);
     else if (perkId == 2) G.perkExplosionRadius += 0.6f;
     else if (perkId == 3) G.perkFrostDuration += 2.0f;
     else if (perkId == 4) G.perkChainCount += 3;
     else if (perkId == 5) G.perkSpeedMult += 0.3f;
-    else if (perkId == 6) { G.perkManaRegenMult += 1.2f; G.playerMaxMana += 40.0f; }
+    else if (perkId == 6) {
+        G.perkManaRegenMult += 1.0f;
+        G.playerMaxMana += 40.0f;
+        G.playerMana = std::min(G.playerMaxMana, G.playerMana + 40.0f);
+    }
+    else return;
 
-    SaveGameToFile();
+    G.currentPerkChoices.clear();
     G.state = STATE_PLAYING;
-    if (G.mouseCaptured) DisableCursor();
+    // Persist the chosen reward before consuming XP for the next pending choice.
+    SaveGameToFile();
+    if (G.playerXp >= G.playerNextXp) TriggerLevelUp();
+    if (G.state == STATE_PLAYING && G.mouseCaptured && IsWindowReady()) DisableCursor();
 }
 
 // -----------------------------------------------------------------------------
@@ -394,6 +473,8 @@ void StartWave(int w, bool saveProgress) {
     // Clean up corpses and active projectiles from previous wave
     G.enemies.clear();
     G.projectiles.clear();
+    G.frostNovas.clear();
+    G.lightnings.clear();
 
     if (w % 5 == 0) {
         // Boss Wave every 5 waves!
@@ -467,6 +548,10 @@ void ResetGame() {
 }
 
 void UpdateGameplay(float dt) {
+    if (G.state == STATE_PLAYING && G.playerXp >= G.playerNextXp) {
+        TriggerLevelUp();
+        if (G.state == STATE_PERK_SELECT) return;
+    }
     float t = (float)GetTime();
 
     if (G.screenShake > 0.0f) {
@@ -502,15 +587,17 @@ void UpdateGameplay(float dt) {
         G.previousState = STATE_PLAYING;
         G.state = STATE_SETTINGS;
         G.escCooldown = 0.35f;
-        EnableCursor();
+        if (IsWindowReady()) EnableCursor();
         return;
     }
 
     // Toggle mouse capture (TAB)
     if (IsKeyPressed(KEY_TAB)) {
         G.mouseCaptured = !G.mouseCaptured;
-        if (G.mouseCaptured) DisableCursor();
-        else EnableCursor();
+        if (IsWindowReady()) {
+            if (G.mouseCaptured) DisableCursor();
+            else EnableCursor();
+        }
     }
 
     // Camera Look
@@ -626,7 +713,7 @@ void UpdateGameplay(float dt) {
             G.playerPos.z + sinf(sAngle) * 2.2f
         };
         for (auto& e : G.enemies) {
-            if (!e.active) continue;
+            if (!e.active || e.hp <= 0.0f) continue;
             if (Vector3Distance(shieldPos, e.pos) < 1.4f) {
                 e.hp -= 40.0f * dt;
                 e.hurtTimer = 0.1f;
@@ -636,42 +723,7 @@ void UpdateGameplay(float dt) {
         }
     }
 
-    // Update Frost Novas
-    for (auto& fn : G.frostNovas) {
-        if (!fn.active) continue;
-        fn.radius += fn.speed * dt;
-        if (fn.radius >= fn.maxRadius) {
-            fn.active = false;
-            continue;
-        }
-
-        for (auto& e : G.enemies) {
-            if (!e.active) continue;
-            float dist = Vector3Distance(fn.center, e.pos);
-            if (fabsf(dist - fn.radius) < 1.8f) {
-                // Frost wraith is immune to freeze!
-                if (e.type == ENEMY_FROST_WRAITH) {
-                    // Takes partial damage, does not freeze
-                    e.hp -= fn.damage * 0.4f;
-                } else if (e.frozenTimer <= 0.0f) {
-                    e.frozenTimer = fn.duration;
-                    e.hp -= fn.damage;
-                }
-                e.hurtTimer = 0.2f;
-                G.hitmarkerTimer = 0.15f;
-                AddDamageText(Vector3Add(e.pos, {0, 1.8f, 0}), (int)fn.damage, SKYBLUE);
-
-                for (int i = 0; i < 14; i++) {
-                    Vector3 vel = {
-                        ((float)rand() / (float)RAND_MAX - 0.5f) * 4.0f,
-                        1.0f + (float)rand() / (float)RAND_MAX * 4.0f,
-                        ((float)rand() / (float)RAND_MAX - 0.5f) * 4.0f
-                    };
-                    AddParticle(e.pos, vel, WHITE, 0.3f, 0.5f);
-                }
-            }
-        }
-    }
+    UpdateFrostNovas(dt);
 
     // Update Lightnings
     for (auto& lb : G.lightnings) {
@@ -687,7 +739,7 @@ void UpdateGameplay(float dt) {
         p.life -= dt;
         if (p.life <= 0.0f || p.pos.y < 0.0f) {
             p.active = false;
-            if (p.type == 0) TriggerExplosion(p.pos, 5.5f * G.perkExplosionRadius, p.damage, ORANGE);
+            if (p.type == 0) TriggerExplosion(p.pos, 5.5f * G.perkExplosionRadius, p.damage, ORANGE, true);
             continue;
         }
 
@@ -700,7 +752,7 @@ void UpdateGameplay(float dt) {
 
         if (p.type == 0) {
             for (auto& e : G.enemies) {
-                if (!e.active) continue;
+                if (!e.active || e.hp <= 0.0f) continue;
                 Vector3 enemyCenter = e.pos;
                 if (e.type == ENEMY_GOLEM) enemyCenter.y += 1.1f;
                 else if (e.type == ENEMY_MAGE || e.type == ENEMY_NECROMANCER) enemyCenter.y += 1.0f;
@@ -708,7 +760,7 @@ void UpdateGameplay(float dt) {
                 if (Vector3Distance(p.pos, enemyCenter) <= (p.radius + e.radius)) {
                     p.active = false;
                     G.hitmarkerTimer = 0.15f;
-                    TriggerExplosion(p.pos, 5.5f * G.perkExplosionRadius, p.damage, ORANGE);
+                    TriggerExplosion(p.pos, 5.5f * G.perkExplosionRadius, p.damage, ORANGE, true);
                     break;
                 }
             }
@@ -718,8 +770,9 @@ void UpdateGameplay(float dt) {
             if (Vector3Distance(p.pos, playerCenter) <= (p.radius + 1.15f)) {
                 p.active = false;
                 if (G.invulnerableTimer <= 0.0f) {
-                    PlaySound(G.sndHurt);
+                    if (IsAudioDeviceReady()) PlaySound(G.sndHurt);
                     G.playerHp -= p.damage;
+                    G.invulnerableTimer = 0.35f;
                     G.hitFlash = 0.5f;
                     if (G.settings.screenShake) G.screenShake = 0.4f;
                     AddDamageText(Vector3Add(G.playerPos, {0, 2.0f, 0}), (int)p.damage, RED);
@@ -728,252 +781,13 @@ void UpdateGameplay(float dt) {
         }
     }
 
-    // Update Enemies (8 Distinct AI Behaviors with Separation & Smart Movement)
-    for (size_t ei = 0; ei < G.enemies.size(); ei++) {
-        auto& e = G.enemies[ei];
-        if (!e.active) continue;
-        e.animTimer += dt;
-        if (e.hurtTimer > 0.0f) e.hurtTimer -= dt;
+    UpdateEnemies(dt, arenaRadius);
 
-        if (e.frozenTimer > 0.0f) {
-            e.frozenTimer -= dt;
-            continue;
-        }
-
-        // Separation force: push away from nearby living enemies to avoid clumping
-        for (size_t oj = 0; oj < G.enemies.size(); oj++) {
-            if (ei == oj || !G.enemies[oj].active) continue;
-            Vector3 diff = Vector3Subtract(e.pos, G.enemies[oj].pos);
-            diff.y = 0.0f;
-            float d = Vector3Length(diff);
-            float minDist = e.radius + G.enemies[oj].radius + 0.45f;
-            if (d > 0.01f && d < minDist) {
-                float push = (1.0f - d / minDist) * 4.5f * dt;
-                Vector3 pushDir = Vector3Normalize(diff);
-                e.pos = Vector3Add(e.pos, Vector3Scale(pushDir, push));
-            }
-        }
-
-        Vector3 toPlayer = Vector3Subtract(G.playerPos, e.pos);
-        toPlayer.y = 0.0f;
-        float distToPlayer = Vector3Length(toPlayer);
-
-        if (distToPlayer > 0.1f) {
-            Vector3 dir = Vector3Normalize(toPlayer);
-            Vector3 strafe = { -dir.z, 0.0f, dir.x };
-
-            if (e.type == ENEMY_WISP) {
-                // Wisp: swooping sinusoidal flight, orbits at 8-11m
-                e.pos.y = 1.7f + sinf(e.animTimer * 4.0f) * 0.35f;
-                if (distToPlayer > 10.0f) e.pos = Vector3Add(e.pos, Vector3Scale(dir, e.speed * dt));
-                else if (distToPlayer < 6.5f) e.pos = Vector3Subtract(e.pos, Vector3Scale(dir, e.speed * 0.8f * dt));
-                e.pos = Vector3Add(e.pos, Vector3Scale(strafe, sinf(e.animTimer * 3.0f) * 4.2f * dt));
-            } else if (e.type == ENEMY_GOLEM) {
-                // Golem: ground brute, charges when within 8m
-                e.pos.y = 0.0f;
-                float gSpeed = (distToPlayer < 8.0f) ? (e.speed * 1.45f) : e.speed;
-                if (distToPlayer > 2.0f) e.pos = Vector3Add(e.pos, Vector3Scale(dir, gSpeed * dt));
-            } else if (e.type == ENEMY_MAGE) {
-                // Mage: hovers at 1.2m, retreats if player gets close
-                e.pos.y = 1.2f;
-                if (distToPlayer > 14.0f) e.pos = Vector3Add(e.pos, Vector3Scale(dir, e.speed * dt));
-                else if (distToPlayer < 7.0f) e.pos = Vector3Subtract(e.pos, Vector3Scale(dir, e.speed * 1.1f * dt));
-            } else if (e.type == ENEMY_PYRO) {
-                // Hellfire Imp: high-speed erratic bat darting
-                e.pos.y = 1.6f + fabsf(sinf(e.animTimer * 5.0f)) * 1.6f;
-                float dart = sinf(e.animTimer * 7.0f);
-                if (distToPlayer > 7.0f) e.pos = Vector3Add(e.pos, Vector3Scale(dir, e.speed * dt));
-                else if (distToPlayer < 4.0f) e.pos = Vector3Subtract(e.pos, Vector3Scale(dir, e.speed * dt));
-                e.pos = Vector3Add(e.pos, Vector3Scale(strafe, dart * 6.0f * dt));
-            } else if (e.type == ENEMY_FROST_WRAITH) {
-                // Frost Wraith: smooth eerie orbit and vertical levitation
-                e.pos.y = 1.8f + sinf(e.animTimer * 2.2f) * 0.7f;
-                if (distToPlayer > 12.0f) e.pos = Vector3Add(e.pos, Vector3Scale(dir, e.speed * dt));
-                else if (distToPlayer < 8.0f) e.pos = Vector3Subtract(e.pos, Vector3Scale(dir, e.speed * 0.7f * dt));
-                e.pos = Vector3Add(e.pos, Vector3Scale(strafe, 3.6f * dt));
-            } else if (e.type == ENEMY_STORM_ELEMENT) {
-                // Storm Elemental: rapid burst dash with lightning sparks
-                e.pos.y = 1.1f + sinf(e.animTimer * 10.0f) * 0.2f;
-                float burst = (fmodf(e.animTimer, 2.2f) < 0.7f) ? 1.9f : 0.8f;
-                if (distToPlayer > 1.8f) e.pos = Vector3Add(e.pos, Vector3Scale(dir, e.speed * burst * dt));
-                if (rand() % 3 == 0) AddParticle(e.pos, {0, 0.5f, 0}, YELLOW, 0.2f, 0.25f);
-            } else if (e.type == ENEMY_NECROMANCER) {
-                // Necromancer: backline commander, retreats if rushed
-                e.pos.y = 0.0f;
-                if (distToPlayer > 16.0f) e.pos = Vector3Add(e.pos, Vector3Scale(dir, e.speed * dt));
-                else if (distToPlayer < 10.0f) e.pos = Vector3Subtract(e.pos, Vector3Scale(dir, e.speed * dt));
-            } else if (e.type == ENEMY_BOSS) {
-                // Void Archon Boss: hovers gracefully between 2.2m and 3.6m altitude
-                e.pos.y = 2.8f + sinf(e.animTimer * 1.6f) * 0.8f;
-                if (distToPlayer > 13.0f) e.pos = Vector3Add(e.pos, Vector3Scale(dir, e.speed * dt));
-                else if (distToPlayer < 8.5f) e.pos = Vector3Subtract(e.pos, Vector3Scale(dir, e.speed * 0.9f * dt));
-                e.pos = Vector3Add(e.pos, Vector3Scale(strafe, sinf(e.animTimer * 0.9f) * 2.5f * dt));
-            }
-        }
-
-        // Keep enemies on the arena platform
-        float enemyDistCenter = sqrtf(e.pos.x * e.pos.x + e.pos.z * e.pos.z);
-        if (enemyDistCenter > arenaRadius - 1.2f) {
-            e.pos.x = (e.pos.x / enemyDistCenter) * (arenaRadius - 1.2f);
-            e.pos.z = (e.pos.z / enemyDistCenter) * (arenaRadius - 1.2f);
-        }
-
-        e.attackCooldown -= dt;
-        if (e.attackCooldown <= 0.0f) {
-            Vector3 aimPlayerTorso = Vector3Normalize(Vector3Subtract(Vector3Add(G.playerPos, {0, 1.2f, 0}), e.pos));
-
-            if (e.type == ENEMY_WISP && distToPlayer < 18.0f) {
-                Projectile vp;
-                vp.pos = e.pos;
-                vp.vel = Vector3Scale(aimPlayerTorso, 19.0f);
-                vp.radius = 0.38f;
-                vp.damage = e.attackDamage;
-                vp.type = 1;
-                vp.life = 3.0f;
-                vp.active = true;
-                vp.color = PURPLE;
-                G.projectiles.push_back(vp);
-                e.attackCooldown = 2.4f;
-            } else if (e.type == ENEMY_GOLEM && distToPlayer < 2.8f) {
-                if (G.invulnerableTimer <= 0.0f) {
-                    PlaySound(G.sndHurt);
-                    G.playerHp -= e.attackDamage;
-                    G.hitFlash = 0.6f;
-                    if (G.settings.screenShake) G.screenShake = 0.5f;
-                    AddDamageText(Vector3Add(G.playerPos, {0, 2.0f, 0}), (int)e.attackDamage, RED);
-                }
-                e.attackCooldown = 1.8f;
-            } else if (e.type == ENEMY_MAGE && distToPlayer < 24.0f) {
-                // Mage: teleport away if player is too close, else shoot
-                if (distToPlayer < 6.0f) {
-                    float a = (float)rand() / (float)RAND_MAX * 2.0f * PI;
-                    float r = 12.0f + (float)rand() / (float)RAND_MAX * 8.0f;
-                    e.pos = Vector3{ cosf(a) * r, 1.2f, sinf(a) * r };
-                }
-                Projectile vp;
-                vp.pos = e.pos;
-                vp.vel = Vector3Scale(aimPlayerTorso, 15.0f);
-                vp.radius = 0.45f;
-                vp.damage = e.attackDamage;
-                vp.type = 1;
-                vp.life = 3.5f;
-                vp.active = true;
-                vp.color = MAGENTA;
-                G.projectiles.push_back(vp);
-                e.attackCooldown = 3.2f;
-            } else if (e.type == ENEMY_PYRO && distToPlayer < 20.0f) {
-                // Rapid flame burst aimed at player
-                Projectile pp;
-                pp.pos = e.pos;
-                pp.vel = Vector3Scale(aimPlayerTorso, 24.0f);
-                pp.radius = 0.36f;
-                pp.damage = e.attackDamage;
-                pp.type = 1;
-                pp.life = 2.4f;
-                pp.active = true;
-                pp.color = ORANGE;
-                G.projectiles.push_back(pp);
-                e.attackCooldown = 1.6f;
-            } else if (e.type == ENEMY_FROST_WRAITH && distToPlayer < 22.0f) {
-                // Frost bolt that chills
-                Projectile fp;
-                fp.pos = e.pos;
-                fp.vel = Vector3Scale(aimPlayerTorso, 17.0f);
-                fp.radius = 0.42f;
-                fp.damage = e.attackDamage;
-                fp.type = 1;
-                fp.life = 3.0f;
-                fp.active = true;
-                fp.color = SKYBLUE;
-                G.projectiles.push_back(fp);
-                e.attackCooldown = 2.6f;
-            } else if (e.type == ENEMY_STORM_ELEMENT && distToPlayer < 18.0f) {
-                // High-speed shock dash toward player
-                Vector3 dir = Vector3Normalize(toPlayer);
-                e.pos = Vector3Add(e.pos, Vector3Scale(dir, 7.0f));
-                if (Vector3Distance(e.pos, G.playerPos) < 2.2f && G.invulnerableTimer <= 0.0f) {
-                    PlaySound(G.sndHurt);
-                    G.playerHp -= e.attackDamage;
-                    G.hitFlash = 0.5f;
-                    AddDamageText(Vector3Add(G.playerPos, {0, 2.0f, 0}), (int)e.attackDamage, YELLOW);
-                }
-                e.attackCooldown = 2.2f;
-            } else if (e.type == ENEMY_NECROMANCER) {
-                // Summon mini-wisp minion
-                Enemy minion;
-                minion.pos = Vector3Add(e.pos, { ((float)rand() / (float)RAND_MAX - 0.5f) * 2.0f, 0, ((float)rand() / (float)RAND_MAX - 0.5f) * 2.0f });
-                minion.vel = { 0, 0, 0 };
-                minion.type = ENEMY_WISP;
-                minion.hp = minion.maxHp = 25.0f;
-                minion.speed = 6.5f;
-                minion.radius = 0.7f;
-                minion.attackCooldown = 2.0f;
-                minion.attackDamage = 14.0f;
-                minion.pos.y = 1.6f;
-                minion.frozenTimer = 0.0f;
-                minion.hurtTimer = 0.0f;
-                minion.animTimer = 0.0f;
-                minion.active = true;
-                G.enemies.push_back(minion);
-                e.attackCooldown = 4.5f;
-            } else if (e.type == ENEMY_BOSS) {
-                // Boss 5-way spread barrage
-                for (int b = -2; b <= 2; b++) {
-                    float bAngle = (float)b * 0.20f;
-                    Vector3 spreadDir = {
-                        aimPlayerTorso.x * cosf(bAngle) - aimPlayerTorso.z * sinf(bAngle),
-                        aimPlayerTorso.y,
-                        aimPlayerTorso.x * sinf(bAngle) + aimPlayerTorso.z * cosf(bAngle)
-                    };
-                    Projectile bp;
-                    bp.pos = e.pos;
-                    bp.vel = Vector3Scale(spreadDir, 18.0f);
-                    bp.radius = 0.55f;
-                    bp.damage = e.attackDamage;
-                    bp.type = 1;
-                    bp.life = 4.0f;
-                    bp.active = true;
-                    bp.color = RED;
-                    G.projectiles.push_back(bp);
-                }
-                e.attackCooldown = 2.6f;
-            }
-        }
-
-        if (e.hp <= 0.0f) {
-            e.active = false;
-            G.kills++;
-            G.combo++;
-            G.comboTimer = 3.5f;
-            int killScore = (e.type == ENEMY_BOSS) ? 1000 : ((e.type == ENEMY_GOLEM) ? 150 : 80);
-            G.score += killScore * (1 + G.combo / 4);
-
-            int gemCount = (e.type == ENEMY_BOSS) ? 12 : ((e.type == ENEMY_GOLEM) ? 4 : 2);
-            for (int g = 0; g < gemCount; g++) {
-                Vector3 gPos = {
-                    e.pos.x + ((float)rand() / (float)RAND_MAX - 0.5f) * 1.5f,
-                    0.5f,
-                    e.pos.z + ((float)rand() / (float)RAND_MAX - 0.5f) * 1.5f
-                };
-                ManaGem gem = { gPos, 15.0f, 18.0f, true };
-                G.gems.push_back(gem);
-            }
-
-            for (int p = 0; p < 25; p++) {
-                Vector3 vel = {
-                    ((float)rand() / (float)RAND_MAX - 0.5f) * 6.0f,
-                    1.0f + (float)rand() / (float)RAND_MAX * 5.0f,
-                    ((float)rand() / (float)RAND_MAX - 0.5f) * 6.0f
-                };
-                AddParticle(e.pos, vel, PURPLE, 0.4f, 0.6f);
-            }
-
-            if (e.type == ENEMY_BOSS) {
-                G.bossActive = false;
-                PlaySound(G.sndLevelUp);
-                SaveGameToFile();
-            }
-        }
+    // Resolve defeat before pickups, level-up healing or the wave-clear reward.
+    if (G.playerHp <= 0.0f) {
+        G.state = STATE_GAMEOVER;
+        if (IsWindowReady()) EnableCursor();
+        return;
     }
 
     // Update Gems
@@ -992,13 +806,14 @@ void UpdateGameplay(float dt) {
 
         if (dist < 1.3f) {
             gem.active = false;
-            PlaySound(G.sndGem);
+            if (IsAudioDeviceReady()) PlaySound(G.sndGem);
             G.playerXp += (int)gem.value;
             G.playerMana = fminf(G.playerMaxMana, G.playerMana + 10.0f);
             AddDamageText(Vector3Add(G.playerPos, {0, 1.8f, 0}), (int)gem.value, GOLD);
 
             if (G.playerXp >= G.playerNextXp) {
                 TriggerLevelUp();
+                if (G.state == STATE_PERK_SELECT) return;
             }
         }
     }
@@ -1063,7 +878,7 @@ void UpdateGameplay(float dt) {
             }
             if (!anyAlive && !G.bossActive) {
                 // Wave completed celebration!
-                PlaySound(G.sndLevelUp);
+                if (IsAudioDeviceReady()) PlaySound(G.sndLevelUp);
                 G.playerHp = fminf(G.playerMaxHp, G.playerHp + 30.0f);
                 G.playerMana = G.playerMaxMana;
                 StartWave(G.wave + 1);
@@ -1071,8 +886,4 @@ void UpdateGameplay(float dt) {
         }
     }
 
-    if (G.playerHp <= 0.0f) {
-        G.state = STATE_GAMEOVER;
-        EnableCursor();
-    }
 }

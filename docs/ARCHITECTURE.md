@@ -11,12 +11,14 @@ audio are generated in code; no external game assets are needed to run it.
 | `src/core/GameContext.h` | Shared game types and the declaration of `G` |
 | `src/core/GameContext.cpp` | The single shared game context |
 | `src/audio/ProceduralAudio.*` | PCM generation and procedural sound functions |
-| `src/gameplay/Gameplay.*` | Movement, spells, enemies, waves, perks and effect updates |
+| `src/gameplay/Gameplay.*` | Movement, spells, waves, perks and effect updates |
+| `src/gameplay/EnemySystem.*` | Enemy AI, attack windups, deaths and deferred summons |
 | `src/persistence/SaveSystem.*` | Settings and saved-run file I/O |
 | `src/rendering/WorldRenderer.*` | Arena, wizard, enemies and world effect drawing |
 | `src/ui/Interface.*` | HUD, buttons, sliders and menus |
 | `third_party/` | Bundled Windows MinGW Raylib distribution and its license |
 | `tests/SaveSystemTests.cpp` | Save/settings regression checks without a game window |
+| `tests/CombatSystemTests.cpp` | Combat, attack timing and progression regression checks |
 | `docs/GRAPHICS_PLAN_FA.md` | Proposed visual direction and staged graphics work |
 
 ## Frame flow
@@ -48,6 +50,22 @@ the appropriate module and expose only functions that another module needs.
 Existing enum values include title, playing, paused, settings, perk selection and
 game over. The current pause interaction opens the settings screen; a dedicated
 paused-screen renderer is not part of this restructuring.
+
+## Combat and progression contracts
+
+- Fireball explosions explicitly request Shatter; lightning explosions do not.
+  A living frozen target takes 1.5 times the usual fire explosion damage and loses
+  its freeze. Frost Wraiths cannot be frozen.
+- Each Frost Nova records the enemy indices it has hit. Indices stay stable
+  during a wave; starting a wave clears old novas before reusing those indices.
+- Golem windups store their ground origin. Renderer and simulation share the
+  same windup/radius constants; freezing or killing the golem cancels its attack.
+- Enemy deaths resolve before movement and attacks. Summons commit after the
+  enemy loop, so vector growth cannot invalidate an enemy being simulated.
+- Perk selection pauses simulation. Additional earned levels open subsequent
+  choices after the current selection; capped Triad is removed from the pool.
+- Enemy attack previews and per-nova hit tracking are runtime state. The legacy
+  `SaveData` and `GameSettings` field layouts remain unchanged.
 
 ## Persistence contract
 

@@ -17,8 +17,8 @@ avoid adding substantial logic to `src/main.cpp`.
 ## Before opening a pull request
 
 - Build the configuration you changed and record the exact command and platform.
-  Run `ctest --preset debug` (or `release`) after building to check save/settings
-  regressions.
+  Run `ctest --preset debug` (or `release`) after building to check combat,
+  progression and save/settings regressions.
 - Run the game when a display is available. Check new game, movement, spells,
   pause/resume, settings, save/continue and normal exit as relevant to the change.
 - For visual changes, include screenshots or a short clip at the same camera,

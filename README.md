@@ -7,6 +7,16 @@
 
 A fast-paced, native **3D magical survival action game** built from scratch in **modern C++ (C++17)** with **Raylib 6.0**. Battle relentless waves of dark creatures, unleash devastating arcane spells, upgrade your wizard with rogue-lite perks, and synthesize all audio procedurally in real-time.
 
+### New in 1.1: tactical combat and reliable progression
+
+- **Shatter:** freeze a target with Frost Nova, then hit it with a fireball explosion for **50% extra damage**, consuming the freeze. Each nova hits a target once; Frost Wraiths remain immune to freezing.
+- **Reliable escape:** Blink costs **zero mana**. Its 2.8-second base cooldown improves with Fleetfoot, down to a 1.2-second minimum.
+- **Dodgeable golems:** a fixed ground warning shows the 3.2m slam area for 0.7 seconds. Move or Blink outside it, or interrupt the windup with Frost Nova.
+- **Useful upgrades:** Triad grows from 3 to 5 to 7 fireballs; its capped upgrade leaves the selection pool. Absolute Zero improves frost damage as well as duration, and accumulated level-ups receive separate perk choices.
+- **Stable encounters:** dead frozen enemies grant rewards, necromancer summons are safely queued and limited, and successful enemy hits grant a short protection window.
+
+See [CHANGELOG.md](CHANGELOG.md) for details and save compatibility.
+
 > 📖 **زبان فارسی**: جهت مطالعه مستندات و راهنمای بازی به زبان فارسی، به [README_FA.md](README_FA.md) مراجعه کنید.
 
 ---
