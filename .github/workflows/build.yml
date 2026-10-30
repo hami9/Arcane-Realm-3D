@@ -115,7 +115,7 @@ jobs:
         shell: pwsh
         run: |
           $cmake = Get-Content CMakeLists.txt -Raw
-          $version = [regex]::Match($cmake, 'VERSION +([0-9.]+)').Groups[1].Value
+          $version = [regex]::Match($cmake, '(?m)^\s*VERSION\s+([0-9]+[.][0-9]+[.][0-9]+)\s*$').Groups[1].Value
           if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+$') { throw 'Invalid project version' }
           $packageName = "ArcaneRealm-v$version-windows-x86_64"
           $packageDir = "dist/$packageName"
