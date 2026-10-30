@@ -49,7 +49,7 @@ if errorlevel 1 goto failed
 echo Building Arcane Realm 3D with %ARCANE_CXX%...
 "%ARCANE_CXX%" -O2 -std=c++17 -Wall -Wextra -Isrc -I"%ARCANE_RAYLIB%\include" ^
     src\main.cpp src\core\GameContext.cpp src\audio\ProceduralAudio.cpp ^
-    src\gameplay\Gameplay.cpp src\persistence\SaveSystem.cpp ^
+    src\gameplay\Gameplay.cpp src\gameplay\EnemySystem.cpp src\persistence\SaveSystem.cpp ^
     src\rendering\WorldRenderer.cpp src\ui\Interface.cpp ^
     -L"%ARCANE_RAYLIB%\lib" -lraylib -lopengl32 -lgdi32 -lwinmm -static ^
     -o "build\windows\ArcaneRealm.exe"

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "raylib.h"
+#include <cstddef>
 #include <vector>
 
 #ifndef CYAN
@@ -65,6 +66,8 @@ struct FrostNova {
     float damage;
     float duration;
     bool active;
+    // Enemies keep their vector indices until the wave ends.
+    std::vector<std::size_t> hitEnemyIndices;
 };
 
 struct LightningBolt {
@@ -95,6 +98,9 @@ struct Enemy {
     float animTimer;
     float attackDamage;
     bool active;
+    // Runtime-only attack preview; legacy saved-run layouts stay unchanged.
+    float attackWindup = 0.0f;
+    Vector3 attackOrigin{};
 };
 
 struct Perk {

@@ -1,5 +1,6 @@
 #include "rendering/WorldRenderer.h"
 #include "core/GameContext.h"
+#include "gameplay/EnemySystem.h"
 #include "raymath.h"
 #include "rlgl.h"
 
@@ -21,6 +22,31 @@ void DrawRuneRing(Vector3 center, float radius, Color color, float rotation) {
             DrawLine3D(p1, pInner, color);
         }
     }
+}
+
+void DrawGolemSlamTelegraph(const Enemy& enemy) {
+    if (!enemy.active || enemy.hp <= 0.0f || enemy.type != ENEMY_GOLEM ||
+        enemy.attackWindup <= 0.0f || enemy.frozenTimer > 0.0f) return;
+
+    // The fixed perimeter is the actual damage boundary; the inner ring counts down.
+    Vector3 center = {enemy.attackOrigin.x, 0.05f, enemy.attackOrigin.z};
+    float remaining = Clamp(enemy.attackWindup / GolemSlamWindup, 0.0f, 1.0f);
+    Color warning = Color{255, 110, 48, 255};
+    Color fill = ColorAlpha(warning, 0.12f + (1.0f - remaining) * 0.14f);
+    constexpr int segments = 48;
+    for (int i = 0; i < segments; ++i) {
+        float a = static_cast<float>(i) / segments * 2.0f * PI;
+        float b = static_cast<float>(i + 1) / segments * 2.0f * PI;
+        Vector3 first = {center.x + cosf(a) * GolemSlamRadius, center.y,
+                         center.z + sinf(a) * GolemSlamRadius};
+        Vector3 second = {center.x + cosf(b) * GolemSlamRadius, center.y,
+                          center.z + sinf(b) * GolemSlamRadius};
+        DrawTriangle3D(center, second, first, fill);
+    }
+    DrawCircle3D(center, GolemSlamRadius, Vector3{1, 0, 0}, 90.0f, warning);
+    DrawRuneRing(center, GolemSlamRadius, warning, 0.0f);
+    DrawCircle3D(Vector3{center.x, center.y + 0.02f, center.z},
+                 GolemSlamRadius * remaining, Vector3{1, 0, 0}, 90.0f, GOLD);
 }
 
 void DrawCrystal(Vector3 pos, Color col, float size, float rot) {
@@ -141,13 +167,14 @@ void DrawEnemyModel(const Enemy& e) {
             DrawSphere(Vector3{ 0, bob - tailOffset * 0.5f + twBob, tailOffset }, 0.22f / w, PURPLE);
         }
     } else if (e.type == ENEMY_GOLEM) {
+        float armLift = e.attackWindup > 0.0f ? 0.9f : 0.0f;
         DrawCube(Vector3{ 0, 1.2f, 0 }, 1.5f, 1.8f, 1.2f, ColorTint(DARKGRAY, tint));
         DrawCubeWires(Vector3{ 0, 1.2f, 0 }, 1.52f, 1.82f, 1.22f, ColorTint(GRAY, tint));
         DrawCube(Vector3{ -0.4f, 2.1f, 0.4f }, 0.3f, 0.7f, 0.3f, RED);
         DrawCube(Vector3{  0.4f, 2.0f, 0.4f }, 0.3f, 0.6f, 0.3f, ORANGE);
         DrawCube(Vector3{ 0, 1.2f, -0.55f }, 0.5f, 0.5f, 0.2f, ColorTint(RED, tint));
-        DrawSphere(Vector3{ -1.1f, 0.8f, 0 }, 0.45f, ColorTint(GRAY, tint));
-        DrawSphere(Vector3{  1.1f, 0.8f, 0 }, 0.45f, ColorTint(GRAY, tint));
+        DrawSphere(Vector3{ -1.1f, 0.8f + armLift, 0 }, 0.45f, ColorTint(GRAY, tint));
+        DrawSphere(Vector3{  1.1f, 0.8f + armLift, 0 }, 0.45f, ColorTint(GRAY, tint));
     } else if (e.type == ENEMY_MAGE) {
         DrawCylinder(Vector3{ 0, 1.0f, 0 }, 0.3f, 0.6f, 1.6f, 8, ColorTint(BLACK, tint));
         DrawSphere(Vector3{ 0, 1.9f, 0 }, 0.35f, ColorTint(PURPLE, tint));
@@ -328,6 +355,10 @@ void DrawWorld() {
         if (!fn.active) continue;
         DrawCircle3D(fn.center, fn.radius, Vector3{ 1, 0, 0 }, 90.0f, ColorAlpha(SKYBLUE, 0.45f));
         DrawRuneRing(fn.center, fn.radius, SKYBLUE, curTime * 2.0f);
+    }
+
+    for (const auto& enemy : G.enemies) {
+        DrawGolemSlamTelegraph(enemy);
     }
 
     for (auto& lb : G.lightnings) {

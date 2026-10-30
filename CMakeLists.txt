@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 project(ArcaneRealm3D
-    VERSION 1.0.0
+    VERSION 1.1.0
     DESCRIPTION "A native 3D magical survival action game built with C++ and Raylib"
     LANGUAGES C CXX
 )
@@ -71,6 +71,7 @@ add_executable(ArcaneRealm
     src/core/GameContext.cpp
     src/audio/ProceduralAudio.cpp
     src/gameplay/Gameplay.cpp
+    src/gameplay/EnemySystem.cpp
     src/persistence/SaveSystem.cpp
     src/rendering/WorldRenderer.cpp
     src/ui/Interface.cpp
@@ -100,6 +101,7 @@ if(BUILD_TESTING)
         tests/SaveSystemTests.cpp
         src/core/GameContext.cpp
         src/gameplay/Gameplay.cpp
+        src/gameplay/EnemySystem.cpp
         src/persistence/SaveSystem.cpp
     )
     target_compile_features(ArcaneSaveTests PRIVATE cxx_std_17)
@@ -108,4 +110,18 @@ if(BUILD_TESTING)
     target_link_libraries(ArcaneSaveTests PRIVATE raylib)
     add_test(NAME save-system COMMAND ArcaneSaveTests)
     set_tests_properties(save-system PROPERTIES TIMEOUT 15)
+
+    add_executable(ArcaneCombatTests
+        tests/CombatSystemTests.cpp
+        src/core/GameContext.cpp
+        src/gameplay/Gameplay.cpp
+        src/gameplay/EnemySystem.cpp
+        src/persistence/SaveSystem.cpp
+    )
+    target_compile_features(ArcaneCombatTests PRIVATE cxx_std_17)
+    set_target_properties(ArcaneCombatTests PROPERTIES CXX_EXTENSIONS OFF)
+    target_include_directories(ArcaneCombatTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(ArcaneCombatTests PRIVATE raylib)
+    add_test(NAME combat-system COMMAND ArcaneCombatTests)
+    set_tests_properties(combat-system PROPERTIES TIMEOUT 15)
 endif()

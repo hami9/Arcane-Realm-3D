@@ -28,13 +28,65 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake ninja-build pkg-config \
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
-            libgl1-mesa-dev libasound2-dev
+            libgl1-mesa-dev libasound2-dev libgl1-mesa-dri xvfb xauth
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --parallel 2
-      - name: Check save and settings regression
+      - name: Check gameplay and save regression
         run: ctest --preset ${{ matrix.preset }}
+      - name: Smoke test the release executable
+        if: matrix.preset == 'release'
+        run: |
+          cat > "$RUNNER_TEMP/alsa-null.conf" <<'EOF'
+          pcm.!default { type null }
+          ctl.!default { type hw card 0 }
+          EOF
+          set +e
+          ALSA_CONFIG_PATH="$RUNNER_TEMP/alsa-null.conf" LIBGL_ALWAYS_SOFTWARE=1 \
+            xvfb-run -a timeout 5s build/release/bin/ArcaneRealm
+          status=$?
+          set -e
+          test "$status" -eq 124
+      - name: Package Linux release
+        if: matrix.preset == 'release'
+        id: package
+        run: |
+          version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
+          [[ "$version" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]
+          package_name="ArcaneRealm-v${version}-linux-x86_64"
+          package_dir="dist/${package_name}"
+          mkdir -p "$package_dir/third_party/raylib"
+          cp build/release/bin/ArcaneRealm LICENSE README.md README_FA.md CHANGELOG.md "$package_dir/"
+          cp -R docs "$package_dir/docs"
+          cp third_party/raylib-6.0_win64_mingw-w64/LICENSE "$package_dir/third_party/raylib/LICENSE"
+          cat > "$package_dir/RUNNING.txt" <<'EOF'
+          Arcane Realm 3D - Linux x86_64
+
+          Built on Ubuntu 24.04 with glibc 2.39. Use Ubuntu 24.04 or a compatible
+          newer Linux distribution; this archive does not bundle system libraries.
+          Requires an X11 display, an OpenGL 3.3 capable graphics driver and ALSA.
+          Ubuntu runtime packages: libx11-6 libxrandr2 libxinerama1 libxcursor1
+          libxi6 libgl1 libasound2t64.
+
+          From this extracted directory run: ./ArcaneRealm
+          Settings and progress are stored in the current working directory.
+          See README.md / README_FA.md for controls and the docs directory for changes.
+          Project and Raylib licenses are included; audio and geometry are procedural.
+          EOF
+          tar -C dist -czf "dist/${package_name}.tar.gz" "$package_name"
+          (cd dist && sha256sum "${package_name}.tar.gz" > "${package_name}.tar.gz.sha256")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Upload Linux release package
+        if: matrix.preset == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ArcaneRealm-v${{ steps.package.outputs.version }}-linux-x86_64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
 
   windows:
     name: Windows (64-bit MinGW/UCRT)
@@ -45,7 +97,54 @@ jobs:
         with:
           msystem: UCRT64
           update: true
-          install: mingw-w64-ucrt-x86_64-gcc
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
       - name: Build with bundled Raylib
         shell: msys2 {0}
         run: MSYS2_ARG_CONV_EXCL='*' cmd.exe /c build.bat --no-run
+      - name: Check native Windows gameplay and save regression
+        shell: msys2 {0}
+        run: |
+          cmake --preset release
+          cmake --build --preset release --parallel 2
+          ctest --preset release
+      - name: Package Windows release
+        id: package
+        shell: pwsh
+        run: |
+          $cmake = Get-Content CMakeLists.txt -Raw
+          $version = [regex]::Match($cmake, '(?m)^\s*VERSION\s+([0-9]+[.][0-9]+[.][0-9]+)\s*$').Groups[1].Value
+          if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+$') { throw 'Invalid project version' }
+          $packageName = "ArcaneRealm-v$version-windows-x86_64"
+          $packageDir = "dist/$packageName"
+          New-Item -ItemType Directory -Force "$packageDir/third_party/raylib" | Out-Null
+          Copy-Item build/windows/ArcaneRealm.exe, LICENSE, README.md, README_FA.md, CHANGELOG.md $packageDir
+          Copy-Item docs -Destination $packageDir -Recurse
+          Copy-Item third_party/raylib-6.0_win64_mingw-w64/LICENSE "$packageDir/third_party/raylib/LICENSE"
+          @'
+          Arcane Realm 3D - Windows x86_64
+
+          Requires 64-bit Windows 10 or newer and an OpenGL 3.3 capable graphics driver.
+          Extract this archive and launch ArcaneRealm.exe. Raylib and compiler runtimes
+          are linked statically; no separate Raylib DLL or compiler installation is needed.
+
+          Settings and progress are stored in the current working directory.
+          See README.md / README_FA.md for controls and the docs directory for changes.
+          Project and Raylib licenses are included; audio and geometry are procedural.
+          '@ | Set-Content "$packageDir/RUNNING.txt" -Encoding utf8
+          $archive = "dist/$packageName.zip"
+          Compress-Archive -Path $packageDir -DestinationPath $archive -CompressionLevel Optimal
+          $checksum = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$checksum  $packageName.zip" | Set-Content "$archive.sha256" -Encoding ascii
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Upload Windows release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ArcaneRealm-v${{ steps.package.outputs.version }}-windows-x86_64
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14

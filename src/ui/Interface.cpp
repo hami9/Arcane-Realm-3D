@@ -239,16 +239,27 @@ void DrawArcaneHUD(int screenW, int screenH) {
         Color color;
         float cd;
         float maxCd;
+        int manaCost;
     } slots[4] = {
-        { "LMB", "Fireball", ORANGE, G.cdFireball, 0.28f },
-        { "RMB/Q", "Frost Nova", SKYBLUE, G.cdFrost, 5.0f },
-        { "E", "Thunder", PURPLE, G.cdThunder, 6.5f },
-        { "SPACE", "Blink", MAGENTA, G.cdBlink, 2.8f }
+        { "LMB", "Fireball", ORANGE, G.cdFireball, 0.28f, 12 },
+        { "RMB/Q", "Frost Nova", SKYBLUE, G.cdFrost, 5.0f, 30 },
+        { "E", "Thunder", PURPLE, G.cdThunder, 6.5f, 40 },
+        { "SPACE", "Blink", MAGENTA, G.cdBlink, GetBlinkCooldown(), 0 }
     };
+
+    const char* tacticHint = "FROST + FIRE = SHATTER (1.5x)  |  ORANGE RING: BLINK OUT";
+    int hintWidth = MeasureText(tacticHint, 12);
+    DrawText(tacticHint, screenW / 2 - hintWidth / 2, hotbarY - 38, 12, RAYWHITE);
 
     for (int i = 0; i < 4; i++) {
         int sx = hotbarX + i * (slotSize + slotSpacing);
         int sy = hotbarY;
+
+        char costText[16];
+        snprintf(costText, sizeof(costText), "%d MP", slots[i].manaCost);
+        int costWidth = MeasureText(costText, 11);
+        DrawText(costText, sx + slotSize / 2 - costWidth / 2, sy - 15, 11,
+                 slots[i].manaCost == 0 ? CYAN : LIGHTGRAY);
 
         DrawRectangleRounded(Rectangle{ (float)sx, (float)sy, (float)slotSize, (float)slotSize }, 0.2f, 4, ColorAlpha(Color{ 20, 16, 35, 255 }, 0.9f));
         DrawRectangleRoundedLines(Rectangle{ (float)sx, (float)sy, (float)slotSize, (float)slotSize }, 0.2f, 4, slots[i].color);
@@ -266,7 +277,7 @@ void DrawArcaneHUD(int screenW, int screenH) {
         }
 
         if (slots[i].cd > 0.0f) {
-            float ratio = slots[i].cd / slots[i].maxCd;
+            float ratio = fminf(1.0f, slots[i].cd / slots[i].maxCd);
             DrawRectangle(sx, sy, slotSize, (int)(slotSize * ratio), ColorAlpha(BLACK, 0.72f));
             char cdText[16];
             snprintf(cdText, sizeof(cdText), "%.1f", slots[i].cd);
